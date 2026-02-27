@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SICREA - Sistema de Gestión Empresarial</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Barra superior -->
+    <header class="top-bar">
+        <div class="logo">
+            <span class="logo-text">SICREA</span>
+        </div>
+        <div class="user-section">
+            <div class="notifications" onclick="mostrarNotificaciones()">
+                <i class="fas fa-bell"></i>
+                <span class="notification-badge">3</span>
+            </div>
+            <div class="user-info" onclick="toggleUserMenu()">
+                <img src="https://ui-avatars.com/api/?name=Admin+SICREA&background=1e3a5f&color=fff&size=40" alt="Usuario">
+                <span>Admin SICREA</span>
+                <i class="fas fa-chevron-down"></i>
+            </div>
+            <div class="user-menu" id="userMenu">
+                <a href="#" onclick="showPage('config')"><i class="fas fa-user"></i> Mi Perfil</a>
+                <a href="#" onclick="showPage('config')"><i class="fas fa-cog"></i> Configuración</a>
+                <div class="menu-divider"></div>
+                <a href="#" onclick="cerrarSesion()"><i class="fas fa-sign-out-alt"></i> Cerrar Sesión</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Menú lateral -->
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-title">MENÚ PRINCIPAL</span>
+            </div>
+            <a href="#" class="menu-item active" data-page="dashboard" onclick="showPage('dashboard')">
+                <i class="fas fa-chart-pie"></i>
+                <span>Dashboard</span>
+                <span class="menu-badge" id="dashboardBadge"></span>
+            </a>
+            <a href="#" class="menu-item" data-page="cotizaciones" onclick="showPage('cotizaciones')">
+                <i class="fas fa-file-invoice-dollar"></i>
+                <span>Cotizaciones</span>
+                <span class="menu-badge" id="cotizacionesBadge"></span>
+            </a>
+            <a href="#" class="menu-item" data-page="facturacion" onclick="showPage('facturacion')">
+                <i class="fas fa-receipt"></i>
+                <span>Facturación</span>
+                <span class="menu-badge" id="facturasBadge"></span>
+            </a>
+            <a href="#" class="menu-item" data-page="inventario" onclick="showPage('inventario')">
+                <i class="fas fa-boxes"></i>
+                <span>Inventario</span>
+                <span class="menu-badge" id="inventarioBadge"></span>
+            </a>
+            <a href="#" class="menu-item" data-page="proyectos" onclick="showPage('proyectos')">
+                <i class="fas fa-tasks"></i>
+                <span>Proyectos</span>
+                <span class="menu-badge" id="proyectosBadge"></span>
+            </a>
+            <a href="#" class="menu-item" data-page="firmas" onclick="showPage('firmas')">
+                <i class="fas fa-signature"></i>
+                <span>Firma Digital</span>
+                <span class="menu-badge" id="firmasBadge"></span>
+            </a>
+            <a href="#" class="menu-item" data-page="clientes" onclick="showPage('clientes')">
+                <i class="fas fa-users"></i>
+                <span>CRM Clientes</span>
+                <span class="menu-badge" id="clientesBadge"></span>
+            </a>
+            
+            <div class="sidebar-divider"></div>
+            
+            <a href="#" class="menu-item" data-page="config" onclick="showPage('config')">
+                <i class="fas fa-cog"></i>
+                <span>Configuración</span>
+            </a>
+        </nav>
+
+        <!-- Contenido principal -->
+        <main class="main-content" id="mainContent">
+            <!-- Aquí se carga la página actual -->
+        </main>
+    </div>
+
+    <!-- Contenedor para modales y notificaciones -->
+    <div id="modalContainer"></div>
+    <div id="toastContainer"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>
