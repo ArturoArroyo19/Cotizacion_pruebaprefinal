@@ -1,8 +1,27 @@
 console.log('🔄 Verificando Supabase...');
-if (typeof window.supabase === 'undefined') {
+
+// Verificar si localStorage está disponible
+function isLocalStorageAvailable() {
+    try {
+        const test = '__test__';
+        localStorage.setItem(test, test);
+        localStorage.removeItem(test);
+        return true;
+    } catch(e) {
+        console.warn('⚠️ localStorage no disponible, usando memoria temporal');
+        return false;
+    }
+}
+
+const localStorageAvailable = isLocalStorageAvailable();
+
+// Verificar si Supabase está cargado
+if (typeof window.supabase === 'undefined' && typeof supabase === 'undefined') {
     console.log('❌ Supabase no está cargado, usando modo offline');
+    // Crear un objeto simulado para que no dé errores
     window.supabase = {
         createClient: function() {
+            console.log('📦 Usando cliente simulado de Supabase (offline)');
             return {
                 from: function() {
                     return {
@@ -17,6 +36,7 @@ if (typeof window.supabase === 'undefined') {
     };
 } else {
     console.log('✅ Supabase detectado correctamente');
+    window.supabase = window.supabase || supabase;
 }
 
 // ============================================
@@ -25,54 +45,34 @@ if (typeof window.supabase === 'undefined') {
 const SUPABASE_URL = 'https://xkuckfchcqkanmuqvrbp.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhrdWNrZmNoY3FrYW5tdXF2cmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE5Nzg5ODksImV4cCI6MjA4NzU1NDk4OX0.PnyqCPVyZWlGVvhWjjnFwnbKCuI_6HbmFKTncZOrS5k';
 
-let supabase = null;
+let supabaseClient = null;
 let supabaseConectado = false;
 
 async function initSupabase() {
     try {
         console.log('🔄 Conectando a Supabase...');
-        if (!window.supabase) {
-            console.error('❌ Supabase SDK no está cargado');
-            showToast('Supabase no disponible - usando modo local', 'warning');
-            return false;
-        }
         
-        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-            auth: {
-                persistSession: false,
-                autoRefreshToken: false
-            },
-            global: {
-                fetch: function(url, options) {
-                    return fetch(url, { ...options, mode: 'cors' }).catch(err => {
-                        console.warn('Error de fetch, continuando sin Supabase:', err);
-                        return new Response(null, { status: 200 });
-                    });
-                }
-            }
-        });
-        
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 3000)
-        );
-        
-        const testPromise = supabase.from('documentos').select('count', { count: 'exact', head: true });
-        
-        const result = await Promise.race([testPromise, timeoutPromise]).catch(e => {
-            console.warn('Timeout en conexión a Supabase:', e);
-            return { error: true };
-        });
-        
-        if (result && result.error) {
-            console.warn('Error de conexión a Supabase:', result.error);
+        if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+            console.error('❌ Supabase SDK no está cargado correctamente');
             showToast('Usando modo local - sin conexión a nube', 'info');
             supabaseConectado = false;
             return false;
         }
         
-        console.log('✅ Conectado a Supabase correctamente');
-        supabaseConectado = true;
-        showToast('Conectado a la nube', 'success');
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        
+        // Probar conexión (opcional)
+        try {
+            const { error } = await supabaseClient.from('documentos').select('count', { count: 'exact', head: true });
+            if (error) throw error;
+            console.log('✅ Conectado a Supabase correctamente');
+            supabaseConectado = true;
+            showToast('Conectado a la nube', 'success');
+        } catch (e) {
+            console.warn('⚠️ Supabase conectado pero tabla no existe:', e);
+            supabaseConectado = true;
+        }
+        
         return true;
         
     } catch (error) {
@@ -84,8 +84,13 @@ async function initSupabase() {
 }
 
 async function cargarDesdeSupabase() {
-    if (!supabaseConectado) {
+    if (!supabaseConectado || !supabaseClient) {
         await initSupabase();
+    }
+    
+    if (!supabaseConectado || !supabaseClient) {
+        showToast('No hay conexión con la nube', 'error');
+        return;
     }
     
     showToast('Cargando datos de la nube...', 'info');
@@ -93,9 +98,17 @@ async function cargarDesdeSupabase() {
     const tablas = ['clientes', 'cotizaciones', 'facturas', 'productos', 'proyectos', 'documentos', 'configuracion'];
     
     for (const tabla of tablas) {
-        const { data, error } = await supabase.from(tabla).select('*');
-        if (!error && data.length > 0) {
-            localStorage.setItem(tabla, JSON.stringify(data));
+        try {
+            const { data, error } = await supabaseClient.from(tabla).select('*');
+            if (!error && data && data.length > 0) {
+                if (localStorageAvailable) {
+                    localStorage.setItem(tabla, JSON.stringify(data));
+                } else {
+                    DB.memoryStorage[tabla] = data;
+                }
+            }
+        } catch (e) {
+            console.warn(`Error cargando ${tabla}:`, e);
         }
     }
     
@@ -119,12 +132,29 @@ let currentSignatureCanvas = null;
 let isDrawing = false;
 
 // ============================================
-// BASE DE DATOS LOCAL (LocalStorage)
+// BASE DE DATOS LOCAL (con fallback a memoria)
 // ============================================
 const DB = {
+    memoryStorage: {
+        clientes: [],
+        cotizaciones: [],
+        facturas: [],
+        productos: [],
+        proyectos: [],
+        documentos: [],
+        config: []
+    },
+    
     init() {
         console.log('Inicializando base de datos local...');
         
+        if (!localStorageAvailable) {
+            console.warn('⚠️ Usando almacenamiento en memoria');
+            this.initMemoryData();
+            return;
+        }
+        
+        // Clientes
         if (!localStorage.getItem('clientes')) {
             localStorage.setItem('clientes', JSON.stringify([
                 { 
@@ -139,9 +169,34 @@ const DB = {
                     notas: 'Cliente preferente',
                     fecha_registro: '2025-01-15'
                 },
+                { 
+                    id: 'cli_2', 
+                    nombre: 'Corporativo XYZ', 
+                    email: 'info@xyzcorp.com', 
+                    telefono: '555-5678', 
+                    empresa: 'XYZ Corporativo',
+                    rfc: 'XYZ920823MN7',
+                    direccion: 'Av. Insurgentes #456, Col. Del Valle, CDMX',
+                    estado: 'activo',
+                    notas: 'Cliente importante',
+                    fecha_registro: '2025-01-20'
+                },
+                { 
+                    id: 'cli_3', 
+                    nombre: 'Tienda Online SA', 
+                    email: 'ventas@tiendaonline.com', 
+                    telefono: '555-9012', 
+                    empresa: 'Tienda Online S.A. de C.V.',
+                    rfc: 'TIO780102PL4',
+                    direccion: 'Av. Revolución #789, Col. Escandón, CDMX',
+                    estado: 'activo',
+                    notas: '',
+                    fecha_registro: '2025-02-01'
+                }
             ]));
         }
 
+        // Cotizaciones
         if (!localStorage.getItem('cotizaciones')) {
             localStorage.setItem('cotizaciones', JSON.stringify([
                 { 
@@ -217,6 +272,7 @@ const DB = {
             ]));
         }
 
+        // Facturas
         if (!localStorage.getItem('facturas')) {
             localStorage.setItem('facturas', JSON.stringify([
                 {
@@ -250,6 +306,7 @@ const DB = {
             ]));
         }
 
+        // Productos
         if (!localStorage.getItem('productos')) {
             localStorage.setItem('productos', JSON.stringify([
                 {
@@ -291,6 +348,7 @@ const DB = {
             ]));
         }
 
+        // Proyectos
         if (!localStorage.getItem('proyectos')) {
             localStorage.setItem('proyectos', JSON.stringify([
                 {
@@ -337,6 +395,7 @@ const DB = {
             ]));
         }
 
+        // Documentos
         if (!localStorage.getItem('documentos')) {
             localStorage.setItem('documentos', JSON.stringify([
                 {
@@ -367,6 +426,7 @@ const DB = {
             ]));
         }
 
+        // Configuración
         if (!localStorage.getItem('config')) {
             localStorage.setItem('config', JSON.stringify({
                 id: 'config_1',
@@ -399,13 +459,54 @@ const DB = {
         }
     },
 
+    initMemoryData() {
+        this.memoryStorage = {
+            clientes: [
+                { id: 'cli_1', nombre: 'Empresa ABC', email: 'contacto@abc.com', telefono: '555-1234', empresa: 'ABC S.A. de C.V.', rfc: 'ABC850515KL9', estado: 'activo' }
+            ],
+            cotizaciones: [
+                { id: 'cot_1', numero: 'COT-2025-001', cliente_id: 'cli_1', cliente_nombre: 'Empresa ABC', proyecto: 'Desarrollo Web', total: 34800, estado: 'pendiente', fecha_creacion: '2025-02-20' }
+            ],
+            facturas: [
+                { id: 'fac_1', numero: 'FAC-2025-001', cliente_id: 'cli_1', cliente_nombre: 'Empresa ABC', monto: 34800, estado: 'pendiente' }
+            ],
+            productos: [],
+            proyectos: [],
+            documentos: [],
+            config: [{
+                id: 'config_1',
+                empresa: 'PIARA GPE ARROYO CASTILLO',
+                rfc: 'AOCBZ3P',
+                direccion: 'APODACA NL',
+                telefono: '81 2886 5333',
+                email: 'arroyo.piara@gmail.com'
+            }]
+        };
+    },
+
     get(collection) {
-        const data = localStorage.getItem(collection);
-        return data ? JSON.parse(data) : [];
+        if (!localStorageAvailable) {
+            return this.memoryStorage[collection] || [];
+        }
+        try {
+            const data = localStorage.getItem(collection);
+            return data ? JSON.parse(data) : [];
+        } catch (e) {
+            console.error(`Error leyendo ${collection}:`, e);
+            return [];
+        }
     },
 
     set(collection, data) {
-        localStorage.setItem(collection, JSON.stringify(data));
+        if (!localStorageAvailable) {
+            this.memoryStorage[collection] = data;
+            return;
+        }
+        try {
+            localStorage.setItem(collection, JSON.stringify(data));
+        } catch (e) {
+            console.error(`Error escribiendo ${collection}:`, e);
+        }
     },
 
     add(collection, item) {
@@ -450,14 +551,14 @@ const DB = {
 };
 
 // ============================================
-// FUNCIONES DE SUPABASE
+// FUNCIONES DE SUPABASE (CORREGIDAS)
 // ============================================
 const SupabaseDB = {
     async getAll(collection) {
-        if (!supabaseConectado) return DB.get(collection);
+        if (!supabaseConectado || !supabaseClient) return DB.get(collection);
         
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from(collection)
                 .select('*');
                 
@@ -470,10 +571,10 @@ const SupabaseDB = {
     },
     
     async getById(collection, id) {
-        if (!supabaseConectado) return DB.getById(collection, id);
+        if (!supabaseConectado || !supabaseClient) return DB.getById(collection, id);
         
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from(collection)
                 .select('*')
                 .eq('id', id)
@@ -488,10 +589,10 @@ const SupabaseDB = {
     },
     
     async add(collection, item) {
-        if (!supabaseConectado) return DB.add(collection, item);
+        if (!supabaseConectado || !supabaseClient) return DB.add(collection, item);
         
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from(collection)
                 .insert([item])
                 .select();
@@ -505,10 +606,10 @@ const SupabaseDB = {
     },
     
     async update(collection, id, updates) {
-        if (!supabaseConectado) return DB.update(collection, id, updates);
+        if (!supabaseConectado || !supabaseClient) return DB.update(collection, id, updates);
         
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from(collection)
                 .update(updates)
                 .eq('id', id)
@@ -523,10 +624,10 @@ const SupabaseDB = {
     },
     
     async delete(collection, id) {
-        if (!supabaseConectado) return DB.delete(collection, id);
+        if (!supabaseConectado || !supabaseClient) return DB.delete(collection, id);
         
         try {
-            const { error } = await supabase
+            const { error } = await supabaseClient
                 .from(collection)
                 .delete()
                 .eq('id', id);
@@ -554,23 +655,31 @@ function formatCurrency(amount) {
 
 function formatDate(dateStr) {
     if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    if (isNaN(date.getTime())) return '-';
-    
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
-    return `${day}/${month}/${year}`;
+    try {
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) return '-';
+        
+        const day = date.getDate().toString().padStart(2, '0');
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+    } catch (e) {
+        return '-';
+    }
 }
 
 function formatDateLong(dateStr) {
     if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('es-MX', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric'
-    });
+    try {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString('es-MX', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
+        });
+    } catch (e) {
+        return '-';
+    }
 }
 
 function capitalize(str) {
@@ -640,6 +749,12 @@ function showPage(pageId) {
     
     loadPageContent(pageId);
     updateBadges();
+
+    // Cerrar menú en móviles
+    if (window.innerWidth <= 1024) {
+        document.getElementById('sidebar')?.classList.remove('show');
+        document.getElementById('sidebarOverlay')?.classList.remove('show');
+    }
 }
 
 function loadPageContent(pageId) {
@@ -721,12 +836,21 @@ function updateBadges() {
 }
 
 // ============================================
-// MODALES - CON BLOQUEO DE DOBLE APERTURA
+// FUNCIONES DEL MENÚ HAMBURGUESA
+// ============================================
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    sidebar.classList.toggle('show');
+    overlay.classList.toggle('show');
+}
+
+// ============================================
+// MODALES - CON BLOQUEO
 // ============================================
 function openModal(modalType) {
-    // Evitar doble apertura
-    if (openModal.procesando) return;
-    openModal.procesando = true;
+    if (document.body.dataset.modalAbriendo === 'true') return;
+    document.body.dataset.modalAbriendo = 'true';
 
     console.log('Abriendo modal:', modalType);
     
@@ -752,7 +876,7 @@ function openModal(modalType) {
             modalContent = renderNuevoClienteModal();
             break;
         default:
-            openModal.procesando = false;
+            document.body.dataset.modalAbriendo = 'false';
             return;
     }
     
@@ -765,8 +889,9 @@ function openModal(modalType) {
         </div>
     `;
 
-    // Liberar bloqueo después de un breve tiempo (para permitir reapertura posterior)
-    setTimeout(() => { openModal.procesando = false; }, 300);
+    setTimeout(() => { 
+        document.body.dataset.modalAbriendo = 'false'; 
+    }, 300);
 }
 
 function closeModal() {
@@ -1024,7 +1149,9 @@ function aprobarCotizacion(id) {
 
     if (confirm('¿Marcar esta cotización como aprobada?')) {
         DB.update('cotizaciones', id, { estado: 'aprobada' });
-        if (supabaseConectado) SupabaseDB.update('cotizaciones', id, { estado: 'aprobada' });
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.update('cotizaciones', id, { estado: 'aprobada' }).catch(e => console.warn(e));
+        }
         showToast('Cotización aprobada', 'success');
         showPage('cotizaciones');
     }
@@ -1179,22 +1306,22 @@ function editarCotizacion(id) {
     `;
 }
 
-// Función actualizarCotizacion con bloqueo
 async function actualizarCotizacion(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (actualizarCotizacion.procesando) return;
-    actualizarCotizacion.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#editarCotizacionForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         const clienteId = formData.get('cliente_id');
         const cliente = DB.getById('clientes', clienteId);
         
@@ -1222,8 +1349,8 @@ async function actualizarCotizacion(e) {
         
         DB.update('cotizaciones', currentEditingId, actualizacion);
         
-        if (supabaseConectado) {
-            await SupabaseDB.update('cotizaciones', currentEditingId, actualizacion);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.update('cotizaciones', currentEditingId, actualizacion).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -1234,11 +1361,13 @@ async function actualizarCotizacion(e) {
         console.error(error);
         showToast('Error al actualizar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Guardar Cambios';
-        }
-        actualizarCotizacion.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Guardar Cambios';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -1258,8 +1387,8 @@ function duplicarCotizacion(id) {
     
     DB.add('cotizaciones', nuevaCot);
     
-    if (supabaseConectado) {
-        SupabaseDB.add('cotizaciones', nuevaCot);
+    if (supabaseConectado && supabaseClient) {
+        SupabaseDB.add('cotizaciones', nuevaCot).catch(e => console.warn(e));
     }
     
     showToast('Cotización duplicada correctamente', 'success');
@@ -1273,8 +1402,8 @@ function eliminarCotizacion(id) {
     if (confirm('¿Estás seguro de eliminar esta cotización?')) {
         DB.delete('cotizaciones', id);
         
-        if (supabaseConectado) {
-            SupabaseDB.delete('cotizaciones', id);
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.delete('cotizaciones', id).catch(e => console.warn(e));
         }
         
         showToast('Cotización eliminada', 'info');
@@ -1591,15 +1720,14 @@ function verFactura(id) {
     `;
 }
 
-// Función marcarFacturaPagada con bloqueo
 async function marcarFacturaPagada(id) {
     if (marcarFacturaPagada.procesando) return;
     marcarFacturaPagada.procesando = true;
 
     DB.update('facturas', id, { estado: 'pagada' });
     
-    if (supabaseConectado) {
-        await SupabaseDB.update('facturas', id, { estado: 'pagada' });
+    if (supabaseConectado && supabaseClient) {
+        await SupabaseDB.update('facturas', id, { estado: 'pagada' }).catch(e => console.warn(e));
     }
     
     showToast('Factura marcada como pagada', 'success');
@@ -1614,8 +1742,8 @@ function eliminarFactura(id) {
     if (confirm('¿Estás seguro de eliminar esta factura?')) {
         DB.delete('facturas', id);
         
-        if (supabaseConectado) {
-            SupabaseDB.delete('facturas', id);
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.delete('facturas', id).catch(e => console.warn(e));
         }
         
         showToast('Factura eliminada', 'info');
@@ -1851,22 +1979,22 @@ function editarProducto(id) {
     `;
 }
 
-// Función actualizarProducto con bloqueo
 async function actualizarProducto(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (actualizarProducto.procesando) return;
-    actualizarProducto.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#editarProductoForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         
         const actualizacion = {
             codigo: formData.get('codigo'),
@@ -1881,8 +2009,8 @@ async function actualizarProducto(e) {
         
         DB.update('productos', currentEditingId, actualizacion);
         
-        if (supabaseConectado) {
-            await SupabaseDB.update('productos', currentEditingId, actualizacion);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.update('productos', currentEditingId, actualizacion).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -1893,11 +2021,13 @@ async function actualizarProducto(e) {
         console.error(error);
         showToast('Error al actualizar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Guardar Cambios';
-        }
-        actualizarProducto.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Guardar Cambios';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -1952,15 +2082,15 @@ function ajustarStock(id) {
     `;
 }
 
-// Función guardarAjusteStock con bloqueo
 async function guardarAjusteStock(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarAjusteStock.procesando) return;
-    guardarAjusteStock.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#ajustarStockForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Aplicando...';
@@ -1985,8 +2115,8 @@ async function guardarAjusteStock(e) {
         
         DB.update('productos', currentEditingId, { stock: nuevoStock });
         
-        if (supabaseConectado) {
-            await SupabaseDB.update('productos', currentEditingId, { stock: nuevoStock });
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.update('productos', currentEditingId, { stock: nuevoStock }).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -1997,11 +2127,13 @@ async function guardarAjusteStock(e) {
         console.error(error);
         showToast('Error al ajustar stock', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Aplicar Ajuste';
-        }
-        guardarAjusteStock.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Aplicar Ajuste';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -2012,8 +2144,8 @@ function eliminarProducto(id) {
     if (confirm('¿Estás seguro de eliminar este producto?')) {
         DB.delete('productos', id);
         
-        if (supabaseConectado) {
-            SupabaseDB.delete('productos', id);
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.delete('productos', id).catch(e => console.warn(e));
         }
         
         showToast('Producto eliminado', 'info');
@@ -2169,12 +2301,11 @@ function toggleTarea(projId, tareaIndex, completada) {
     
     DB.update('proyectos', projId, proj);
     
-    if (supabaseConectado) {
-        SupabaseDB.update('proyectos', projId, proj);
+    if (supabaseConectado && supabaseClient) {
+        SupabaseDB.update('proyectos', projId, proj).catch(e => console.warn(e));
     }
 }
 
-// Funciones de edición de proyectos
 function editarProyecto(id) {
     const proj = DB.getById('proyectos', id);
     if (!proj) return;
@@ -2285,15 +2416,15 @@ function editarProyecto(id) {
     }
 }
 
-// Función guardarEdicionProyecto con bloqueo
 async function guardarEdicionProyecto(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarEdicionProyecto.procesando) return;
-    guardarEdicionProyecto.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#editarProyectoForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
@@ -2303,7 +2434,7 @@ async function guardarEdicionProyecto(e) {
         const tareasJson = document.getElementById('tareas_json').value;
         const tareas = JSON.parse(tareasJson);
         
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         const clienteId = formData.get('cliente_id');
         const cliente = clienteId ? DB.getById('clientes', clienteId) : null;
 
@@ -2320,8 +2451,8 @@ async function guardarEdicionProyecto(e) {
         };
 
         DB.update('proyectos', currentEditingId, actualizacion);
-        if (supabaseConectado) {
-            await SupabaseDB.update('proyectos', currentEditingId, actualizacion);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.update('proyectos', currentEditingId, actualizacion).catch(e => console.warn(e));
         }
 
         closeModal();
@@ -2332,11 +2463,13 @@ async function guardarEdicionProyecto(e) {
         console.error(error);
         showToast('Error al guardar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Guardar Cambios';
-        }
-        guardarEdicionProyecto.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Guardar Cambios';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -2346,7 +2479,9 @@ function eliminarProyecto(id) {
 
     if (confirm('¿Estás seguro de eliminar este proyecto?')) {
         DB.delete('proyectos', id);
-        if (supabaseConectado) SupabaseDB.delete('proyectos', id);
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.delete('proyectos', id).catch(e => console.warn(e));
+        }
         showToast('Proyecto eliminado', 'info');
         showPage('proyectos');
     }
@@ -2478,8 +2613,8 @@ function eliminarDocumento(id) {
     if (confirm('¿Estás seguro de eliminar este documento?')) {
         DB.delete('documentos', id);
         
-        if (supabaseConectado) {
-            SupabaseDB.delete('documentos', id);
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.delete('documentos', id).catch(e => console.warn(e));
         }
         
         showToast('Documento eliminado', 'info');
@@ -2736,22 +2871,22 @@ function editarCliente(id) {
     `;
 }
 
-// Función actualizarCliente con bloqueo
 async function actualizarCliente(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (actualizarCliente.procesando) return;
-    actualizarCliente.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#editarClienteForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         
         const actualizacion = {
             nombre: formData.get('nombre'),
@@ -2766,8 +2901,8 @@ async function actualizarCliente(e) {
         
         DB.update('clientes', currentEditingId, actualizacion);
         
-        if (supabaseConectado) {
-            await SupabaseDB.update('clientes', currentEditingId, actualizacion);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.update('clientes', currentEditingId, actualizacion).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -2778,11 +2913,13 @@ async function actualizarCliente(e) {
         console.error(error);
         showToast('Error al actualizar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Guardar Cambios';
-        }
-        actualizarCliente.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Guardar Cambios';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -2793,8 +2930,8 @@ function eliminarCliente(id) {
     if (confirm('¿Estás seguro de eliminar este cliente?')) {
         DB.delete('clientes', id);
         
-        if (supabaseConectado) {
-            SupabaseDB.delete('clientes', id);
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.delete('clientes', id).catch(e => console.warn(e));
         }
         
         showToast('Cliente eliminado', 'info');
@@ -3279,8 +3416,8 @@ function subirLogo(event) {
         
         DB.update('config', config.id, { logo_url: logoUrl });
         
-        if (supabaseConectado) {
-            SupabaseDB.update('configuracion', config.id, { logo_url: logoUrl });
+        if (supabaseConectado && supabaseClient) {
+            SupabaseDB.update('configuracion', config.id, { logo_url: logoUrl }).catch(e => console.warn(e));
         }
         
         showToast('Logo actualizado correctamente', 'success');
@@ -3306,8 +3443,8 @@ function guardarConfiguracionEmpresa(e) {
     
     DB.update('config', config.id, actualizacion);
     
-    if (supabaseConectado) {
-        SupabaseDB.update('configuracion', config.id, actualizacion);
+    if (supabaseConectado && supabaseClient) {
+        SupabaseDB.update('configuracion', config.id, actualizacion).catch(e => console.warn(e));
     }
     
     showToast('Configuración de empresa guardada', 'success');
@@ -3327,8 +3464,8 @@ function guardarConfiguracionPersonalizacion(e) {
     
     DB.update('config', config.id, actualizacion);
     
-    if (supabaseConectado) {
-        SupabaseDB.update('configuracion', config.id, actualizacion);
+    if (supabaseConectado && supabaseClient) {
+        SupabaseDB.update('configuracion', config.id, actualizacion).catch(e => console.warn(e));
     }
     
     showToast('Personalización guardada', 'success');
@@ -3355,15 +3492,15 @@ function guardarConfiguracionPdfFormat(e) {
     
     DB.update('config', config.id, { pdf_format: pdfFormat });
     
-    if (supabaseConectado) {
-        SupabaseDB.update('configuracion', config.id, { pdf_format: pdfFormat });
+    if (supabaseConectado && supabaseClient) {
+        SupabaseDB.update('configuracion', config.id, { pdf_format: pdfFormat }).catch(e => console.warn(e));
     }
     
     showToast('Formato PDF guardado', 'success');
 }
 
 function sincronizarTodo() {
-    if (!supabaseConectado) {
+    if (!supabaseConectado || !supabaseClient) {
         showToast('No hay conexión con la nube', 'error');
         return;
     }
@@ -3374,18 +3511,20 @@ function sincronizarTodo() {
     
     Promise.all(tablas.map(async tabla => {
         const datos = DB.get(tabla);
-        // Opción simple: reemplazar todo (puede optimizarse)
-        const { error } = await supabase.from(tabla).upsert(datos);
-        if (error) console.error(`Error subiendo ${tabla}:`, error);
+        if (datos && datos.length > 0) {
+            const { error } = await supabaseClient.from(tabla).upsert(datos);
+            if (error) console.error(`Error subiendo ${tabla}:`, error);
+        }
     })).then(() => {
         showToast('✅ Datos subidos a la nube', 'success');
     }).catch(err => {
+        console.error(err);
         showToast('Error al subir datos', 'error');
     });
 }
 
 // ============================================
-// MODALES DE CREACIÓN (con bloqueo en guardado)
+// MODALES DE CREACIÓN
 // ============================================
 function renderNuevaCotizacionModal() {
     const clientes = DB.get('clientes');
@@ -3441,23 +3580,22 @@ function renderNuevaCotizacionModal() {
     `;
 }
 
-// Función guardarNuevaCotizacion con bloqueo y async
 async function guardarNuevaCotizacion(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    // Bloqueo por doble clic
-    if (guardarNuevaCotizacion.procesando) return;
-    guardarNuevaCotizacion.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#nuevaCotizacionForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         const clienteId = formData.get('cliente_id');
         
         if (!clienteId) {
@@ -3495,8 +3633,8 @@ async function guardarNuevaCotizacion(e) {
         
         DB.add('cotizaciones', nuevaCotizacion);
         
-        if (supabaseConectado) {
-            await SupabaseDB.add('cotizaciones', nuevaCotizacion);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.add('cotizaciones', nuevaCotizacion).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -3507,11 +3645,13 @@ async function guardarNuevaCotizacion(e) {
         console.error(error);
         showToast('Error al guardar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Crear Cotización';
-        }
-        guardarNuevaCotizacion.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Crear Cotización';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -3579,22 +3719,22 @@ function renderNuevaFacturaModal() {
     `;
 }
 
-// Función guardarNuevaFactura con bloqueo
 async function guardarNuevaFactura(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarNuevaFactura.procesando) return;
-    guardarNuevaFactura.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#nuevaFacturaForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         const cotizacionId = formData.get('cotizacion_id');
         const cotizacion = DB.getById('cotizaciones', cotizacionId);
         
@@ -3623,9 +3763,9 @@ async function guardarNuevaFactura(e) {
         DB.add('facturas', nuevaFactura);
         DB.update('cotizaciones', cotizacionId, { estado: 'facturada' });
         
-        if (supabaseConectado) {
-            await SupabaseDB.add('facturas', nuevaFactura);
-            await SupabaseDB.update('cotizaciones', cotizacionId, { estado: 'facturada' });
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.add('facturas', nuevaFactura).catch(e => console.warn(e));
+            await SupabaseDB.update('cotizaciones', cotizacionId, { estado: 'facturada' }).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -3636,11 +3776,13 @@ async function guardarNuevaFactura(e) {
         console.error(error);
         showToast('Error al guardar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Guardar Factura';
-        }
-        guardarNuevaFactura.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Guardar Factura';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -3698,22 +3840,22 @@ function renderNuevoProductoModal() {
     `;
 }
 
-// Función guardarNuevoProducto con bloqueo
 async function guardarNuevoProducto(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarNuevoProducto.procesando) return;
-    guardarNuevoProducto.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#nuevoProductoForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         
         const nuevoProducto = {
             id: 'prod_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
@@ -3729,8 +3871,8 @@ async function guardarNuevoProducto(e) {
         
         DB.add('productos', nuevoProducto);
         
-        if (supabaseConectado) {
-            await SupabaseDB.add('productos', nuevoProducto);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.add('productos', nuevoProducto).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -3741,11 +3883,13 @@ async function guardarNuevoProducto(e) {
         console.error(error);
         showToast('Error al guardar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Crear Producto';
-        }
-        guardarNuevoProducto.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Crear Producto';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -3786,22 +3930,22 @@ function renderNuevoProyectoModal() {
     `;
 }
 
-// Función guardarNuevoProyecto con bloqueo
 async function guardarNuevoProyecto(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarNuevoProyecto.procesando) return;
-    guardarNuevoProyecto.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#nuevoProyectoForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         const clienteId = formData.get('cliente_id');
         const cliente = clienteId ? DB.getById('clientes', clienteId) : null;
         
@@ -3820,8 +3964,8 @@ async function guardarNuevoProyecto(e) {
         
         DB.add('proyectos', nuevoProyecto);
         
-        if (supabaseConectado) {
-            await SupabaseDB.add('proyectos', nuevoProyecto);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.add('proyectos', nuevoProyecto).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -3832,11 +3976,13 @@ async function guardarNuevoProyecto(e) {
         console.error(error);
         showToast('Error al guardar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Crear Proyecto';
-        }
-        guardarNuevoProyecto.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Crear Proyecto';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -3892,22 +4038,22 @@ function renderNuevoDocumentoModal() {
     `;
 }
 
-// Función guardarNuevoDocumento con bloqueo
 async function guardarNuevoDocumento(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarNuevoDocumento.procesando) return;
-    guardarNuevoDocumento.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#nuevoDocumentoForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         const clienteId = formData.get('cliente_id');
         const cliente = DB.getById('clientes', clienteId);
         
@@ -3925,8 +4071,8 @@ async function guardarNuevoDocumento(e) {
         
         DB.add('documentos', nuevoDocumento);
         
-        if (supabaseConectado) {
-            await SupabaseDB.add('documentos', nuevoDocumento);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.add('documentos', nuevoDocumento).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -3937,11 +4083,13 @@ async function guardarNuevoDocumento(e) {
         console.error(error);
         showToast('Error al guardar', 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Crear documento';
-        }
-        guardarNuevoDocumento.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Crear documento';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -3987,22 +4135,22 @@ function renderNuevoClienteModal() {
     `;
 }
 
-// Función guardarNuevoCliente con bloqueo
 async function guardarNuevoCliente(e) {
     e.preventDefault();
     e.stopPropagation();
 
-    if (guardarNuevoCliente.procesando) return;
-    guardarNuevoCliente.procesando = true;
+    const form = e.target;
+    if (form.dataset.procesando === 'true') return;
+    form.dataset.procesando = 'true';
 
-    const submitBtn = e.submitter || document.querySelector('#nuevoClienteForm button[type="submit"]');
+    const submitBtn = e.submitter || form.querySelector('button[type="submit"]');
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Guardando...';
     }
 
     try {
-        const formData = new FormData(e.target);
+        const formData = new FormData(form);
         
         const nuevoCliente = {
             id: 'cli_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
@@ -4017,8 +4165,8 @@ async function guardarNuevoCliente(e) {
         
         DB.add('clientes', nuevoCliente);
         
-        if (supabaseConectado) {
-            await SupabaseDB.add('clientes', nuevoCliente);
+        if (supabaseConectado && supabaseClient) {
+            await SupabaseDB.add('clientes', nuevoCliente).catch(e => console.warn(e));
         }
         
         closeModal();
@@ -4026,14 +4174,16 @@ async function guardarNuevoCliente(e) {
         showPage('clientes');
         
     } catch (error) {
-        console.error(error);
-        showToast('Error al guardar', 'error');
+        console.error('Error al guardar cliente:', error);
+        showToast('Error al guardar: ' + error.message, 'error');
     } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Crear Cliente';
-        }
-        guardarNuevoCliente.procesando = false;
+        setTimeout(() => {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Crear Cliente';
+            }
+            form.dataset.procesando = 'false';
+        }, 500);
     }
 }
 
@@ -4059,6 +4209,18 @@ document.addEventListener('DOMContentLoaded', function() {
         const toastContainer = document.createElement('div');
         toastContainer.id = 'toastContainer';
         document.body.appendChild(toastContainer);
+    }
+
+    // Inicializar menú responsive
+    const menuToggle = document.getElementById('menuToggle');
+    if (menuToggle) {
+        menuToggle.addEventListener('click', toggleSidebar);
+    }
+    
+    // Cerrar menú al hacer clic en overlay
+    const overlay = document.getElementById('sidebarOverlay');
+    if (overlay) {
+        overlay.addEventListener('click', toggleSidebar);
     }
     
     console.log('✅ Sistema listo!');

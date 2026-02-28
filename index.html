@@ -4,13 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SICREA - Sistema de Gestión Empresarial</title>
-    <link rel="stylesheet" href="styles.css">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Font Awesome - CDN alternativo (evita bloqueos) -->
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v6.0.0-beta3/css/all.css">
+    <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Tu CSS -->
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <!-- Barra superior -->
+    <!-- Barra superior con menú hamburguesa -->
     <header class="top-bar">
+        <div class="menu-toggle" id="menuToggle">
+            <i class="fas fa-bars"></i>
+        </div>
         <div class="logo">
             <span class="logo-text">SICREA</span>
         </div>
@@ -89,10 +95,17 @@
         </main>
     </div>
 
+    <!-- Overlay para menú responsive -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
     <!-- Contenedor para modales y notificaciones -->
     <div id="modalContainer"></div>
     <div id="toastContainer"></div>
 
+    <!-- Cargar Supabase SDK (ANTES de tu script) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+    <!-- Tu script principal -->
     <script src="script.js"></script>
 </body>
 </html>
